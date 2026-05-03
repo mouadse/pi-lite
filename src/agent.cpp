@@ -165,6 +165,7 @@ std::optional<double> estimate_cost_usd(const std::string& model,
       {"gpt-4.1-nano", 0.10, 0.40},
       {"gpt-4o-mini", 0.15, 0.60},
       {"gpt-4.1", 2.00, 8.00},
+      {"gemini-3-flash-preview", 0.50, 3.00},
   };
 
   const auto lower = to_lower(model);
