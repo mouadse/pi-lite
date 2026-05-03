@@ -2,6 +2,8 @@
 
 `pi-lite` is a tiny coding agent inspired by `badlogic/pi-mono`.
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mouadse/pi-lite)
+
 It keeps only the learning-sized core:
 
 - an OpenAI-compatible chat completions client
