@@ -283,11 +283,7 @@ ToolResult grep_files_tool(const std::filesystem::path& workspace, const nlohman
 
   std::vector<std::filesystem::path> files;
   if (std::filesystem::is_regular_file(path)) {
-    if (const auto manifest = git_file_manifest(workspace, path)) {
-      files = *manifest;
-    } else {
-      files.push_back(path);
-    }
+    files.push_back(path);
   } else if (std::filesystem::is_directory(path)) {
     if (const auto manifest = git_file_manifest(workspace, path)) {
       files = *manifest;
