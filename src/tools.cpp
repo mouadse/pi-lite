@@ -189,20 +189,20 @@ bool should_skip_directory(const std::filesystem::path& path) {
   return skipped.contains(path.filename().string());
 }
 
+std::optional<std::filesystem::path> find_git_root(const std::filesystem::path& workspace_root) {
+  for (auto current = workspace_root; !current.empty(); current = current.parent_path()) {
+    if (std::filesystem::exists(current / ".git")) return current;
+    if (current == current.root_path()) break;
+  }
+  return std::nullopt;
+}
+
 std::optional<std::vector<std::filesystem::path>> git_file_manifest(const std::filesystem::path& workspace,
                                                                     const std::filesystem::path& path) {
   const auto workspace_root = canonical_workspace(workspace);
-  const auto repo_result = run_shell_capture("cd " + shell_quote(workspace_root.string()) +
-                                             " && git rev-parse --show-toplevel 2>/dev/null");
-  if (repo_result.exit_code != 0) return std::nullopt;
-
-  std::istringstream repo_lines(repo_result.output);
-  std::string repo_root_text;
-  std::getline(repo_lines, repo_root_text);
-  repo_root_text = trim(repo_root_text);
-  if (repo_root_text.empty()) return std::nullopt;
-
-  const auto repo_root = canonical_workspace(repo_root_text);
+  const auto repo_root_value = find_git_root(workspace_root);
+  if (!repo_root_value) return std::nullopt;
+  const auto repo_root = *repo_root_value;
   std::error_code ec;
   auto pathspec = std::filesystem::relative(path, repo_root, ec);
   if (ec || pathspec.empty()) pathspec = ".";

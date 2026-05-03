@@ -32,4 +32,5 @@ Improve `pi-lite`, a tiny C++ coding agent. The workload is local and determinis
 - The built-in self-test must pass for a useful improvement.
 
 ## What's Been Tried
-- Session initialized. Baseline expected to expose current local smoke-test status before code changes.
+- Baseline score was 0 because `--self-test` failed: `grep_files` could not find its explicit `.pi-lite-self-test.tmp` path since the git manifest excludes ignored `*.tmp` files.
+- Kept fix: explicit regular-file `grep_files` searches now bypass git manifest filtering while directory searches still use git-aware manifests. Self-test passes 7/7.
