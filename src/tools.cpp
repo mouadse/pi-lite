@@ -57,6 +57,7 @@ nlohmann::json object_schema(nlohmann::json properties, std::vector<std::string>
 }
 
 bool is_sensitive_path(const std::filesystem::path& path);
+bool should_skip_directory(const std::filesystem::path& path);
 std::optional<std::vector<std::filesystem::path>> git_file_manifest(const std::filesystem::path& workspace,
                                                                     const std::filesystem::path& path);
 
@@ -150,28 +151,12 @@ ToolResult list_files_tool(const std::filesystem::path& workspace, const nlohman
   if (!std::filesystem::is_directory(path)) return {.content = "Path is not a directory: " + path_arg, .is_error = true};
 
   std::vector<std::string> entries;
-  if (const auto manifest = git_file_manifest(workspace, path)) {
-    std::unordered_set<std::string> seen;
-    for (const auto& file : *manifest) {
-      std::error_code ec;
-      const auto relative = std::filesystem::relative(file, path, ec);
-      if (ec || relative.empty()) continue;
-
-      auto part = relative.begin();
-      if (part == relative.end()) continue;
-      auto name = part->generic_string();
-      ++part;
-      if (part != relative.end()) name += "/";
-      if (is_sensitive_path(file) && name.back() != '/') name += " [sensitive]";
-      if (seen.insert(name).second) entries.push_back(name);
-    }
-  } else {
-    for (const auto& entry : std::filesystem::directory_iterator(path)) {
-      auto name = entry.path().filename().string();
-      if (entry.is_directory()) name += "/";
-      if (is_sensitive_path(entry.path())) name += " [sensitive]";
-      entries.push_back(name);
-    }
+  for (const auto& entry : std::filesystem::directory_iterator(path)) {
+    if (should_skip_directory(entry.path())) continue;
+    auto name = entry.path().filename().string();
+    if (entry.is_directory()) name += "/";
+    if (is_sensitive_path(entry.path())) name += " [sensitive]";
+    entries.push_back(name);
   }
   std::sort(entries.begin(), entries.end());
 
