@@ -241,6 +241,10 @@ bool is_sensitive_path(const std::filesystem::path& path) {
          full.find("credential") != std::string::npos || full.find("private_key") != std::string::npos;
 }
 
+bool contains_regex_meta(const std::string& pattern) {
+  return pattern.find_first_of(R"(.^$|()[]{}*+?\)") != std::string::npos;
+}
+
 ToolResult grep_files_tool(const std::filesystem::path& workspace, const nlohmann::json& args) {
   const auto pattern = required_string(args, "pattern");
   const auto path_arg = optional_string(args, "path", ".");
@@ -250,11 +254,15 @@ ToolResult grep_files_tool(const std::filesystem::path& workspace, const nlohman
 
   if (!std::filesystem::exists(path)) return {.content = "Path does not exist: " + path_arg, .is_error = true};
 
-  std::regex regex;
-  try {
-    regex = std::regex(pattern, case_sensitive ? std::regex::ECMAScript : std::regex::icase);
-  } catch (const std::regex_error& error) {
-    return {.content = std::string("Invalid regex: ") + error.what(), .is_error = true};
+  const auto literal_pattern = !contains_regex_meta(pattern);
+  const auto folded_pattern = case_sensitive || !literal_pattern ? std::string() : to_lower(pattern);
+  std::optional<std::regex> regex;
+  if (!literal_pattern) {
+    try {
+      regex.emplace(pattern, case_sensitive ? std::regex::ECMAScript : std::regex::icase);
+    } catch (const std::regex_error& error) {
+      return {.content = std::string("Invalid regex: ") + error.what(), .is_error = true};
+    }
   }
 
   std::vector<std::filesystem::path> files;
@@ -293,7 +301,11 @@ ToolResult grep_files_tool(const std::filesystem::path& workspace, const nlohman
     while (std::getline(in, line)) {
       ++line_no;
       if (line.find('\0') != std::string::npos) break;
-      if (!std::regex_search(line, regex)) continue;
+      const auto matched = literal_pattern
+                               ? (case_sensitive ? line.find(pattern) != std::string::npos
+                                                 : to_lower(line).find(folded_pattern) != std::string::npos)
+                               : std::regex_search(line, *regex);
+      if (!matched) continue;
       const auto row = relative_to_workspace(workspace, file) + ":" + std::to_string(line_no) + ": " +
                        truncate_line(line) + "\n";
       if (bytes + row.size() > kDefaultMaxBytes || matches >= max_results) {
