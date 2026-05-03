@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +28,7 @@ std::vector<pilite::SlashCommandSpec> interactive_slash_commands() {
       {.name = "reset", .description = "clear conversation history"},
       {.name = "history", .description = "print stored conversation/tool history"},
       {.name = "edit", .description = "open $EDITOR for a multi-line prompt"},
+      {.name = "model", .description = "show or switch the model (/model <name>)"},
       {.name = "help", .description = "show interactive commands"},
   };
 }
@@ -58,7 +60,7 @@ Environment:
   OPENROUTER_API_KEY, OPENROUTER_MODEL
 
 The program also reads a .env file from the workspace, without printing secrets.
-Interactive commands: /exit, /clear, /reset, /history, /edit, /help, !<shell command>.
+Interactive commands: /exit, /clear, /reset, /history, /edit, /model, /help, !<shell command>.
 Type / in interactive mode to open slash command autocomplete.
 )";
 }
@@ -70,6 +72,99 @@ std::string join_prompt(const std::vector<std::string>& parts) {
     out << parts[i];
   }
   return out.str();
+}
+
+bool is_sensitive_file_ref(const std::filesystem::path& path) {
+  const auto filename = pilite::to_lower(path.filename().string());
+  static const std::vector<std::string> sensitive_names = {
+      ".env", ".env.local", ".env.production", ".env.development",
+      "credentials.json", "secrets.json", "id_rsa", "id_ed25519", "known_hosts"};
+  if (std::find(sensitive_names.begin(), sensitive_names.end(), filename) != sensitive_names.end()) return true;
+
+  const auto full = pilite::to_lower(path.generic_string());
+  return full.find("/.ssh/") != std::string::npos || full.find("secret") != std::string::npos ||
+         full.find("credential") != std::string::npos || full.find("private_key") != std::string::npos;
+}
+
+std::string expand_file_refs(const std::string& prompt, const std::filesystem::path& workspace) {
+  std::string out;
+  std::size_t pos = 0;
+
+  while (pos < prompt.size()) {
+    const auto at = prompt.find('@', pos);
+    if (at == std::string::npos) {
+      out += prompt.substr(pos);
+      break;
+    }
+
+    out += prompt.substr(pos, at - pos);
+
+    const bool at_start = at == 0;
+    const bool after_space = at > 0 && std::isspace(static_cast<unsigned char>(prompt[at - 1]));
+    if (!at_start && !after_space) {
+      out += '@';
+      pos = at + 1;
+      continue;
+    }
+
+    auto end = at + 1;
+    while (end < prompt.size() && !std::isspace(static_cast<unsigned char>(prompt[end]))) ++end;
+
+    const std::string filepath = prompt.substr(at + 1, end - at - 1);
+    if (filepath.empty()) {
+      out += '@';
+      pos = at + 1;
+      continue;
+    }
+
+    std::filesystem::path resolved;
+    try {
+      resolved = pilite::resolve_workspace_path(workspace, filepath);
+    } catch (const std::exception&) {
+      out += '@' + filepath;
+      pos = end;
+      continue;
+    }
+
+    std::error_code ec;
+    auto read_path = std::filesystem::weakly_canonical(resolved, ec);
+    if (ec) read_path = std::filesystem::absolute(resolved).lexically_normal();
+
+    if (!std::filesystem::exists(read_path, ec) || !std::filesystem::is_regular_file(read_path, ec) ||
+        is_sensitive_file_ref(resolved) || is_sensitive_file_ref(read_path)) {
+      out += '@' + filepath;
+      pos = end;
+      continue;
+    }
+
+    std::ifstream in(read_path, std::ios::binary);
+    if (!in) {
+      out += '@' + filepath;
+      pos = end;
+      continue;
+    }
+
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    auto text = buffer.str();
+    if (text.find('\0') != std::string::npos) {
+      out += '@' + filepath;
+      pos = end;
+      continue;
+    }
+    if (text.size() > 100 * 1024) {
+      text = text.substr(0, 100 * 1024) + "\n[... truncated at 100KB]";
+    }
+
+    const auto relative = pilite::relative_to_workspace(workspace, read_path);
+    out += "\n```" + relative + "\n" + text;
+    if (!text.empty() && text.back() != '\n') out += '\n';
+    out += "```\n";
+
+    pos = end;
+  }
+
+  return out;
 }
 
 std::string config_value(const std::unordered_map<std::string, std::string>& dotenv,
@@ -301,15 +396,15 @@ int main(int argc, char** argv) {
   const auto stdin_prompt = !isatty(STDIN_FILENO) ? read_all_stdin() : std::string();
   if (!one_shot_prompt.empty()) {
     if (stdin_prompt.empty()) {
-      agent.run(one_shot_prompt);
+      agent.run(expand_file_refs(one_shot_prompt, config.workspace));
     } else {
-      agent.run(one_shot_prompt + "\n\nPiped stdin:\n" + stdin_prompt);
+      agent.run(expand_file_refs(one_shot_prompt + "\n\nPiped stdin:\n" + stdin_prompt, config.workspace));
     }
     return 0;
   }
 
   if (!isatty(STDIN_FILENO)) {
-    if (!stdin_prompt.empty()) agent.run(stdin_prompt);
+    if (!stdin_prompt.empty()) agent.run(expand_file_refs(stdin_prompt, config.workspace));
     return 0;
   }
 
@@ -334,11 +429,22 @@ int main(int argc, char** argv) {
       continue;
     }
     if (line == "/edit") {
-      if (auto edited = read_prompt_from_editor()) agent.run(*edited);
+      if (auto edited = read_prompt_from_editor()) agent.run(expand_file_refs(*edited, config.workspace));
+      continue;
+    }
+    if (line == "/model" || line.rfind("/model ", 0) == 0) {
+      auto arg = line == "/model" ? std::string() : pilite::trim(line.substr(7));
+      if (arg.empty()) {
+        std::cout << "Current model: " << config.model << "\n";
+      } else {
+        config.model = arg;
+        agent.set_model(config.model);
+        std::cout << "Switched to model: " << config.model << "\n";
+      }
       continue;
     }
     if (line == "/help") {
-      std::cout << "Commands: /exit, /clear, /reset, /history, /edit, /help, !<shell command>. Type / for autocomplete; prefix shell commands with ! to run locally.\n";
+      std::cout << "Commands: /exit, /clear, /reset, /history, /edit, /model, /help, !<shell command>. Type / for autocomplete; prefix shell commands with ! to run locally.\n";
       continue;
     }
     if (line.empty()) continue;
@@ -346,7 +452,7 @@ int main(int argc, char** argv) {
       run_local_shell_command(config.workspace, pilite::trim(line.substr(1)));
       continue;
     }
-    agent.run(line);
+    agent.run(expand_file_refs(line, config.workspace));
   }
 
   return 0;

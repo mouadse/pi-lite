@@ -15,6 +15,7 @@ class Agent {
 
   void run(const std::string& prompt);
   void clear();
+  void set_model(const std::string& model);
   const std::vector<Message>& messages() const { return messages_; }
 
  private:

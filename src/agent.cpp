@@ -206,6 +206,11 @@ void Agent::clear() {
   messages_.clear();
 }
 
+void Agent::set_model(const std::string& model) {
+  config_.model = model;
+  client_ = LlmClient(config_);
+}
+
 std::string Agent::system_prompt() const {
   std::ostringstream prompt;
   prompt << "You are pi-lite, a small general-purpose coding agent for learning purposes.\n";
@@ -220,6 +225,7 @@ std::string Agent::system_prompt() const {
 }
 
 void Agent::run(const std::string& prompt) {
+  auto previous_messages = messages_;
   messages_.push_back(user_message(prompt));
 
   const auto tool_schemas = tools_.schemas();
@@ -246,6 +252,7 @@ void Agent::run(const std::string& prompt) {
     } catch (const std::exception& error) {
       status.stop();
       std::cerr << "LLM request failed: " << error.what() << "\n";
+      if (iteration == 1) messages_ = std::move(previous_messages);
       return;
     }
     status.stop();
