@@ -241,15 +241,6 @@ bool is_sensitive_path(const std::filesystem::path& path) {
          full.find("credential") != std::string::npos || full.find("private_key") != std::string::npos;
 }
 
-bool looks_binary(const std::filesystem::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return true;
-  std::array<char, 512> buffer{};
-  in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-  const auto count = in.gcount();
-  return std::find(buffer.begin(), buffer.begin() + count, '\0') != buffer.begin() + count;
-}
-
 ToolResult grep_files_tool(const std::filesystem::path& workspace, const nlohmann::json& args) {
   const auto pattern = required_string(args, "pattern");
   const auto path_arg = optional_string(args, "path", ".");
@@ -295,13 +286,13 @@ ToolResult grep_files_tool(const std::filesystem::path& workspace, const nlohman
     std::error_code ec;
     if (std::filesystem::file_size(file, ec) > 2 * 1024 * 1024) continue;
     if (is_sensitive_path(file)) continue;
-    if (looks_binary(file)) continue;
 
-    std::ifstream in(file);
+    std::ifstream in(file, std::ios::binary);
     std::string line;
     int line_no = 0;
     while (std::getline(in, line)) {
       ++line_no;
+      if (line.find('\0') != std::string::npos) break;
       if (!std::regex_search(line, regex)) continue;
       const auto row = relative_to_workspace(workspace, file) + ":" + std::to_string(line_no) + ": " +
                        truncate_line(line) + "\n";

@@ -34,3 +34,5 @@ Improve `pi-lite`, a tiny C++ coding agent. The workload is local and determinis
 ## What's Been Tried
 - Baseline score was 0 because `--self-test` failed: `grep_files` could not find its explicit `.pi-lite-self-test.tmp` path since the git manifest excludes ignored `*.tmp` files.
 - Kept fix: explicit regular-file `grep_files` searches now bypass git manifest filtering while directory searches still use git-aware manifests. Self-test passes 7/7.
+- Kept optimization: git manifest lookup now finds `.git` by walking parents instead of spawning `git rev-parse`, lowering median self-test to ~7.7ms.
+- Kept optimization: `list_files` now uses direct directory iteration with skip/sensitive filters instead of deriving immediate entries from recursive `git ls-files`, lowering median self-test to ~3.9ms. Recursive `grep_files` remains git-aware.
