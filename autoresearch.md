@@ -36,3 +36,5 @@ Improve `pi-lite`, a tiny C++ coding agent. The workload is local and determinis
 - Kept fix: explicit regular-file `grep_files` searches now bypass git manifest filtering while directory searches still use git-aware manifests. Self-test passes 7/7.
 - Kept optimization: git manifest lookup now finds `.git` by walking parents instead of spawning `git rev-parse`, lowering median self-test to ~7.7ms.
 - Kept optimization: `list_files` now uses direct directory iteration with skip/sensitive filters instead of deriving immediate entries from recursive `git ls-files`, lowering median self-test to ~3.9ms. Recursive `grep_files` remains git-aware.
+- Kept optimization: `grep_files` now detects NUL bytes during line scanning instead of pre-opening files for binary sniffing, then added a literal-pattern fast path for non-regex searches. Median self-test is ~3.7ms.
+- Discarded: moving `--self-test` before dotenv/API config improved credential-free semantics but regressed latency slightly due to added helper/refactor overhead; consider separately only if optimizing correctness over speed.
