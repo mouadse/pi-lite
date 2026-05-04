@@ -105,10 +105,6 @@ double cosine_similarity_with_norm(const std::vector<float>& query,
   return dot / (query_norm * stored_norm);
 }
 
-double cosine_similarity(const std::vector<float>& a, const std::vector<float>& b) {
-  return cosine_similarity_with_norm(a, vector_norm(a), b, vector_norm(b));
-}
-
 std::string vector_to_blob(const std::vector<float>& vector) {
   std::string blob(vector.size() * sizeof(float), '\0');
   if (!vector.empty()) std::memcpy(blob.data(), vector.data(), blob.size());
