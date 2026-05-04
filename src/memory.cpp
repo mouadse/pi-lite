@@ -448,6 +448,34 @@ void MemoryStore::log_event(const std::string& memory_id,
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
 }
 
+const std::vector<MemoryRecord>& MemoryStore::cached_records() const {
+  if (cache_loaded_) return records_cache_;
+
+  sqlite3_stmt* stmt = nullptr;
+  const char* sql = "SELECT id,memory,hash,vector,user_id,agent_id,run_id,categories,metadata,created_at,updated_at "
+                    "FROM memories ORDER BY updated_at DESC";
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) throw std::runtime_error(sql_error(db_));
+  records_cache_.clear();
+  while (sqlite3_step(stmt) == SQLITE_ROW) records_cache_.push_back(record_from_stmt(stmt));
+  sqlite3_finalize(stmt);
+  cache_loaded_ = true;
+  return records_cache_;
+}
+
+void MemoryStore::upsert_cached_record(MemoryRecord record) const {
+  if (!cache_loaded_) return;
+  erase_cached_record(record.id);
+  records_cache_.insert(records_cache_.begin(), std::move(record));
+}
+
+void MemoryStore::erase_cached_record(const std::string& id) const {
+  if (!cache_loaded_) return;
+  records_cache_.erase(std::remove_if(records_cache_.begin(), records_cache_.end(), [&](const MemoryRecord& record) {
+                         return record.id == id;
+                       }),
+                       records_cache_.end());
+}
+
 bool MemoryStore::add(MemoryRecord record) {
   sqlite3_stmt* stmt = nullptr;
   const char* sql = "INSERT INTO memories(id,memory,hash,vector,user_id,agent_id,run_id,categories,metadata,created_at,updated_at) "
@@ -470,6 +498,7 @@ bool MemoryStore::add(MemoryRecord record) {
   if (code == SQLITE_CONSTRAINT) return false;
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
   log_event(record.id, "ADD", "", record.memory);
+  upsert_cached_record(std::move(record));
   return true;
 }
 
@@ -495,8 +524,19 @@ bool MemoryStore::update(const std::string& id,
   const int code = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
+  const bool changed = sqlite3_changes(db_) > 0;
+  if (changed) {
+    auto updated = *existing;
+    updated.memory = memory;
+    updated.hash = stable_hash(normalized);
+    updated.vector = vector;
+    updated.categories = normalize_categories(categories);
+    updated.metadata = metadata.is_object() ? metadata : nlohmann::json::object();
+    updated.updated_at = now_iso8601();
+    upsert_cached_record(std::move(updated));
+  }
   log_event(id, "UPDATE", existing->memory, memory);
-  return sqlite3_changes(db_) > 0;
+  return changed;
 }
 
 bool MemoryStore::remove(const std::string& id) {
@@ -510,8 +550,10 @@ bool MemoryStore::remove(const std::string& id) {
   const int code = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
+  const bool changed = sqlite3_changes(db_) > 0;
+  if (changed) erase_cached_record(id);
   log_event(id, "DELETE", existing->memory, "");
-  return sqlite3_changes(db_) > 0;
+  return changed;
 }
 
 std::optional<MemoryRecord> MemoryStore::get(const std::string& id) const {
@@ -535,27 +577,18 @@ std::vector<MemoryRecord> MemoryStore::list(const std::string& user_id,
                                             const std::string& run_id,
                                             const std::vector<std::string>& categories,
                                             int limit) const {
-  sqlite3_stmt* stmt = nullptr;
-  std::string sql = "SELECT id,memory,hash,vector,user_id,agent_id,run_id,categories,metadata,created_at,updated_at FROM memories "
-                    "WHERE user_id=? AND agent_id=?";
-  if (!run_id.empty()) sql += " AND run_id=?";
-  sql += " ORDER BY updated_at DESC LIMIT ?";
-  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) throw std::runtime_error(sql_error(db_));
-  int index = 1;
-  bind_text(stmt, index++, user_id);
-  bind_text(stmt, index++, agent_id);
-  if (!run_id.empty()) bind_text(stmt, index++, run_id);
   const auto requested_limit = std::clamp(limit, 1, 500);
-  sqlite3_bind_int(stmt, index++, categories.empty() ? requested_limit : 5000);
-
+  const auto scan_limit = categories.empty() ? requested_limit : 5000;
   std::vector<MemoryRecord> records;
   records.reserve(static_cast<std::size_t>(requested_limit));
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    auto record = record_from_stmt(stmt);
-    if (categories_match(record.categories, categories)) records.push_back(std::move(record));
+  int scanned = 0;
+  for (const auto& record : cached_records()) {
+    if (record.user_id != user_id || record.agent_id != agent_id) continue;
+    if (!run_id.empty() && record.run_id != run_id) continue;
+    if (++scanned > scan_limit) break;
+    if (categories_match(record.categories, categories)) records.push_back(record);
+    if (records.size() >= static_cast<std::size_t>(requested_limit)) break;
   }
-  sqlite3_finalize(stmt);
-  if (records.size() > static_cast<std::size_t>(requested_limit)) records.resize(static_cast<std::size_t>(requested_limit));
   return records;
 }
 

@@ -77,9 +77,14 @@ class MemoryStore {
                  const std::string& event,
                  const std::string& old_memory,
                  const std::string& new_memory) const;
+  const std::vector<MemoryRecord>& cached_records() const;
+  void upsert_cached_record(MemoryRecord record) const;
+  void erase_cached_record(const std::string& id) const;
 
   std::filesystem::path path_;
   sqlite3* db_ = nullptr;
+  mutable bool cache_loaded_ = false;
+  mutable std::vector<MemoryRecord> records_cache_;
 };
 
 class MemoryManager {
