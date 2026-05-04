@@ -93,14 +93,33 @@ double vector_norm(const std::vector<float>& vector) {
   return norm > 0.0 ? std::sqrt(norm) : 0.0;
 }
 
-double cosine_similarity_with_norm(const std::vector<float>& query,
-                                   double query_norm,
-                                   const std::vector<float>& vector,
-                                   double stored_norm) {
-  if (query.empty() || query.size() != vector.size() || query_norm <= 0.0 || stored_norm <= 0.0) return 0.0;
+std::vector<MemoryVectorEntry> sparse_vector(const std::vector<float>& vector) {
+  std::vector<MemoryVectorEntry> sparse;
+  sparse.reserve(64);
+  for (std::size_t i = 0; i < vector.size(); ++i) {
+    if (vector[i] != 0.0f) sparse.push_back({static_cast<std::uint16_t>(i), vector[i]});
+  }
+  return sparse;
+}
+
+double sparse_cosine_similarity(const std::vector<MemoryVectorEntry>& query,
+                                double query_norm,
+                                const std::vector<MemoryVectorEntry>& vector,
+                                double stored_norm) {
+  if (query.empty() || vector.empty() || query_norm <= 0.0 || stored_norm <= 0.0) return 0.0;
   double dot = 0.0;
-  for (std::size_t i = 0; i < query.size(); ++i) {
-    dot += static_cast<double>(query[i]) * static_cast<double>(vector[i]);
+  auto left = query.begin();
+  auto right = vector.begin();
+  while (left != query.end() && right != vector.end()) {
+    if (left->index == right->index) {
+      dot += static_cast<double>(left->value) * static_cast<double>(right->value);
+      ++left;
+      ++right;
+    } else if (left->index < right->index) {
+      ++left;
+    } else {
+      ++right;
+    }
   }
   return dot / (query_norm * stored_norm);
 }
@@ -193,6 +212,7 @@ MemoryRecord record_from_stmt(sqlite3_stmt* stmt) {
   record.memory = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
   record.hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
   record.vector = blob_to_vector(sqlite3_column_blob(stmt, 3), sqlite3_column_bytes(stmt, 3));
+  record.sparse_vector = sparse_vector(record.vector);
   record.vector_norm = vector_norm(record.vector);
   record.user_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
   record.agent_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
@@ -536,6 +556,7 @@ bool MemoryStore::update(const std::string& id,
     updated.memory = memory;
     updated.hash = stable_hash(normalized);
     updated.vector = vector;
+    updated.sparse_vector = sparse_vector(updated.vector);
     updated.vector_norm = vector_norm(updated.vector);
     updated.categories = normalize_categories(categories);
     updated.metadata = metadata.is_object() ? metadata : nlohmann::json::object();
@@ -618,6 +639,7 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
   int scoped_seen = 0;
   int category_matches = 0;
   const double query_norm = vector_norm(query);
+  const auto query_sparse = sparse_vector(query);
   const auto& cache = cached_records();
   for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
     const auto& record = *it;
@@ -626,7 +648,7 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
     if (++scoped_seen > 5000) break;
     if (!categories_match(record.categories, categories)) continue;
     if (++category_matches > 500) break;
-    const double score = cosine_similarity_with_norm(query, query_norm, record.vector, record.vector_norm);
+    const double score = sparse_cosine_similarity(query_sparse, query_norm, record.sparse_vector, record.vector_norm);
     if (score < threshold) continue;
 
     MemoryRecord candidate;
@@ -659,10 +681,11 @@ bool MemoryStore::has_similar(const std::vector<float>& query,
                               const std::string& run_id,
                               double threshold) const {
   const double query_norm = vector_norm(query);
+  const auto query_sparse = sparse_vector(query);
   for (const auto& record : cached_records()) {
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
-    if (cosine_similarity_with_norm(query, query_norm, record.vector, record.vector_norm) >= threshold) return true;
+    if (sparse_cosine_similarity(query_sparse, query_norm, record.sparse_vector, record.vector_norm) >= threshold) return true;
   }
   return false;
 }
@@ -708,6 +731,7 @@ bool MemoryManager::save(const std::string& memory,
   record.memory = trimmed;
   record.hash = stable_hash(normalize_memory_text(trimmed));
   record.vector = embedder_.embed(trimmed);
+  record.sparse_vector = sparse_vector(record.vector);
   record.vector_norm = vector_norm(record.vector);
   record.user_id = config_.memory_user_id;
   record.agent_id = config_.memory_agent_id;

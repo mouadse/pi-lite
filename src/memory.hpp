@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -15,11 +16,17 @@ struct sqlite3;
 
 namespace pilite {
 
+struct MemoryVectorEntry {
+  std::uint16_t index = 0;
+  float value = 0.0f;
+};
+
 struct MemoryRecord {
   std::string id;
   std::string memory;
   std::string hash;
   std::vector<float> vector;
+  std::vector<MemoryVectorEntry> sparse_vector;
   double vector_norm = 0.0;
   std::string user_id;
   std::string agent_id;
