@@ -459,7 +459,7 @@ const std::vector<MemoryRecord>& MemoryStore::cached_records() const {
 
   sqlite3_stmt* stmt = nullptr;
   const char* sql = "SELECT id,memory,hash,vector,user_id,agent_id,run_id,categories,metadata,created_at,updated_at "
-                    "FROM memories ORDER BY updated_at DESC";
+                    "FROM memories ORDER BY updated_at ASC";
   if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) throw std::runtime_error(sql_error(db_));
   records_cache_.clear();
   while (sqlite3_step(stmt) == SQLITE_ROW) records_cache_.push_back(record_from_stmt(stmt));
@@ -471,7 +471,7 @@ const std::vector<MemoryRecord>& MemoryStore::cached_records() const {
 void MemoryStore::upsert_cached_record(MemoryRecord record) const {
   if (!cache_loaded_) return;
   erase_cached_record(record.id);
-  records_cache_.insert(records_cache_.begin(), std::move(record));
+  records_cache_.push_back(std::move(record));
 }
 
 void MemoryStore::erase_cached_record(const std::string& id) const {
@@ -589,7 +589,9 @@ std::vector<MemoryRecord> MemoryStore::list(const std::string& user_id,
   std::vector<MemoryRecord> records;
   records.reserve(static_cast<std::size_t>(requested_limit));
   int scanned = 0;
-  for (const auto& record : cached_records()) {
+  const auto& cache = cached_records();
+  for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
+    const auto& record = *it;
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
     if (++scanned > scan_limit) break;
@@ -616,7 +618,9 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
   int scoped_seen = 0;
   int category_matches = 0;
   const double query_norm = vector_norm(query);
-  for (const auto& record : cached_records()) {
+  const auto& cache = cached_records();
+  for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
+    const auto& record = *it;
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
     if (++scoped_seen > 5000) break;
