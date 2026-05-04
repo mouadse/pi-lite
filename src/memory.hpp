@@ -69,6 +69,11 @@ class MemoryStore {
                                    const std::vector<std::string>& categories,
                                    int top_k,
                                    double threshold) const;
+  bool has_similar(const std::vector<float>& query,
+                   const std::string& user_id,
+                   const std::string& agent_id,
+                   const std::string& run_id,
+                   double threshold) const;
 
  private:
   void initialize();
@@ -121,7 +126,7 @@ class MemoryManager {
   bool is_valid_scope() const;
   bool is_safe_memory(const std::string& memory) const;
   bool owns_record(const MemoryRecord& record) const;
-  std::vector<MemoryRecord> near_duplicates(const std::string& memory, double threshold) const;
+  bool has_near_duplicate(const std::string& memory, double threshold) const;
 
   AppConfig config_;
   HashEmbedder embedder_;

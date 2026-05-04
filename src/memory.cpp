@@ -620,6 +620,19 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
   return candidates;
 }
 
+bool MemoryStore::has_similar(const std::vector<float>& query,
+                              const std::string& user_id,
+                              const std::string& agent_id,
+                              const std::string& run_id,
+                              double threshold) const {
+  for (const auto& record : cached_records()) {
+    if (record.user_id != user_id || record.agent_id != agent_id) continue;
+    if (!run_id.empty() && record.run_id != run_id) continue;
+    if (cosine_similarity(query, record.vector) >= threshold) return true;
+  }
+  return false;
+}
+
 MemoryManager::MemoryManager(AppConfig config)
     : config_(std::move(config)), embedder_(512), store_(config_.memory_path) {}
 
@@ -644,8 +657,8 @@ bool MemoryManager::owns_record(const MemoryRecord& record) const {
          (config_.memory_run_id.empty() || record.run_id == config_.memory_run_id);
 }
 
-std::vector<MemoryRecord> MemoryManager::near_duplicates(const std::string& memory, double threshold) const {
-  return store_.search(embedder_.embed(memory), config_.memory_user_id, config_.memory_agent_id, config_.memory_run_id, {}, 3, threshold);
+bool MemoryManager::has_near_duplicate(const std::string& memory, double threshold) const {
+  return store_.has_similar(embedder_.embed(memory), config_.memory_user_id, config_.memory_agent_id, config_.memory_run_id, threshold);
 }
 
 bool MemoryManager::save(const std::string& memory,
@@ -653,7 +666,7 @@ bool MemoryManager::save(const std::string& memory,
                          const nlohmann::json& metadata) {
   const auto trimmed = trim(memory);
   if (!enabled() || !is_valid_scope() || trimmed.empty() || !is_safe_memory(trimmed)) return false;
-  if (!near_duplicates(trimmed, 0.92).empty()) return false;
+  if (has_near_duplicate(trimmed, 0.92)) return false;
 
   const auto timestamp = now_iso8601();
   MemoryRecord record;
