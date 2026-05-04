@@ -20,6 +20,7 @@ struct MemoryRecord {
   std::string memory;
   std::string hash;
   std::vector<float> vector;
+  double vector_norm = 0.0;
   std::string user_id;
   std::string agent_id;
   std::string run_id;

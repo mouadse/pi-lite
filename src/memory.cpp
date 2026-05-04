@@ -87,18 +87,26 @@ std::size_t hash_token(const std::string& token) {
   return static_cast<std::size_t>(hash);
 }
 
-double cosine_similarity(const std::vector<float>& a, const std::vector<float>& b) {
-  if (a.empty() || a.size() != b.size()) return 0.0;
+double vector_norm(const std::vector<float>& vector) {
+  double norm = 0.0;
+  for (const auto value : vector) norm += static_cast<double>(value) * static_cast<double>(value);
+  return norm > 0.0 ? std::sqrt(norm) : 0.0;
+}
+
+double cosine_similarity_with_norm(const std::vector<float>& query,
+                                   double query_norm,
+                                   const std::vector<float>& vector,
+                                   double stored_norm) {
+  if (query.empty() || query.size() != vector.size() || query_norm <= 0.0 || stored_norm <= 0.0) return 0.0;
   double dot = 0.0;
-  double norm_a = 0.0;
-  double norm_b = 0.0;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    dot += static_cast<double>(a[i]) * static_cast<double>(b[i]);
-    norm_a += static_cast<double>(a[i]) * static_cast<double>(a[i]);
-    norm_b += static_cast<double>(b[i]) * static_cast<double>(b[i]);
+  for (std::size_t i = 0; i < query.size(); ++i) {
+    dot += static_cast<double>(query[i]) * static_cast<double>(vector[i]);
   }
-  if (norm_a <= 0.0 || norm_b <= 0.0) return 0.0;
-  return dot / (std::sqrt(norm_a) * std::sqrt(norm_b));
+  return dot / (query_norm * stored_norm);
+}
+
+double cosine_similarity(const std::vector<float>& a, const std::vector<float>& b) {
+  return cosine_similarity_with_norm(a, vector_norm(a), b, vector_norm(b));
 }
 
 std::string vector_to_blob(const std::vector<float>& vector) {
@@ -189,6 +197,7 @@ MemoryRecord record_from_stmt(sqlite3_stmt* stmt) {
   record.memory = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
   record.hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
   record.vector = blob_to_vector(sqlite3_column_blob(stmt, 3), sqlite3_column_bytes(stmt, 3));
+  record.vector_norm = vector_norm(record.vector);
   record.user_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
   record.agent_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
   if (sqlite3_column_text(stmt, 6)) record.run_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
@@ -531,6 +540,7 @@ bool MemoryStore::update(const std::string& id,
     updated.memory = memory;
     updated.hash = stable_hash(normalized);
     updated.vector = vector;
+    updated.vector_norm = vector_norm(updated.vector);
     updated.categories = normalize_categories(categories);
     updated.metadata = metadata.is_object() ? metadata : nlohmann::json::object();
     updated.updated_at = now_iso8601();
@@ -609,13 +619,14 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
   best.reserve(requested);
   int scoped_seen = 0;
   int category_matches = 0;
+  const double query_norm = vector_norm(query);
   for (const auto& record : cached_records()) {
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
     if (++scoped_seen > 5000) break;
     if (!categories_match(record.categories, categories)) continue;
     if (++category_matches > 500) break;
-    const double score = cosine_similarity(query, record.vector);
+    const double score = cosine_similarity_with_norm(query, query_norm, record.vector, record.vector_norm);
     if (score < threshold) continue;
 
     MemoryRecord candidate;
@@ -647,10 +658,11 @@ bool MemoryStore::has_similar(const std::vector<float>& query,
                               const std::string& agent_id,
                               const std::string& run_id,
                               double threshold) const {
+  const double query_norm = vector_norm(query);
   for (const auto& record : cached_records()) {
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
-    if (cosine_similarity(query, record.vector) >= threshold) return true;
+    if (cosine_similarity_with_norm(query, query_norm, record.vector, record.vector_norm) >= threshold) return true;
   }
   return false;
 }
@@ -696,6 +708,7 @@ bool MemoryManager::save(const std::string& memory,
   record.memory = trimmed;
   record.hash = stable_hash(normalize_memory_text(trimmed));
   record.vector = embedder_.embed(trimmed);
+  record.vector_norm = vector_norm(record.vector);
   record.user_id = config_.memory_user_id;
   record.agent_id = config_.memory_agent_id;
   record.run_id = config_.memory_run_id;
