@@ -600,12 +600,21 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
                                               const std::vector<std::string>& categories,
                                               int top_k,
                                               double threshold) const {
-  auto candidates = list(user_id, agent_id, run_id, categories, 5000);
-  for (auto& candidate : candidates) candidate.score = cosine_similarity(query, candidate.vector);
-  candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [&](const MemoryRecord& record) {
-                     return record.score < threshold;
-                   }),
-                   candidates.end());
+  std::vector<MemoryRecord> candidates;
+  candidates.reserve(static_cast<std::size_t>(std::max(1, top_k)));
+  int scoped_seen = 0;
+  int category_matches = 0;
+  for (const auto& record : cached_records()) {
+    if (record.user_id != user_id || record.agent_id != agent_id) continue;
+    if (!run_id.empty() && record.run_id != run_id) continue;
+    if (++scoped_seen > 5000) break;
+    if (!categories_match(record.categories, categories)) continue;
+    if (++category_matches > 500) break;
+    const double score = cosine_similarity(query, record.vector);
+    if (score < threshold) continue;
+    candidates.push_back(record);
+    candidates.back().score = score;
+  }
   const auto requested = static_cast<std::size_t>(std::max(1, top_k));
   const auto better = [](const MemoryRecord& left, const MemoryRecord& right) {
     if (left.score == right.score) return left.updated_at > right.updated_at;
