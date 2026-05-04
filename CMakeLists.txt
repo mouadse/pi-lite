@@ -33,16 +33,7 @@ add_executable(pi-lite
   ${PI_LITE_COMMON_SOURCES}
 )
 
-add_executable(pi-lite-memory-bench
-  benchmarks/memory_ops_bench.cpp
-  src/config.cpp
-  src/llm_client.cpp
-  src/memory.cpp
-  src/tool.cpp
-  src/util.cpp
-)
-
-foreach(target pi-lite pi-lite-memory-bench)
+foreach(target pi-lite)
   target_include_directories(${target} PRIVATE src)
   target_link_libraries(${target} PRIVATE CURL::libcurl SQLite3::SQLite3)
 

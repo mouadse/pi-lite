@@ -275,7 +275,10 @@ void Agent::run(const std::string& prompt) {
 
     if (assistant.tool_calls.empty()) {
       if (memory_ && memory_->auto_capture_enabled()) {
+        StatusIndicator memory_status(std::cerr, "memory", "auto-capture");
+        memory_status.start();
         const auto saved = memory_->capture_turn(prompt, assistant.content, client_);
+        memory_status.stop();
         if (saved > 0) std::cerr << paint_stderr("\033[2m", "[memory] saved " + std::to_string(saved) + " fact(s)") << "\n";
       }
       return;
