@@ -549,6 +549,7 @@ std::vector<MemoryRecord> MemoryStore::list(const std::string& user_id,
   sqlite3_bind_int(stmt, index++, categories.empty() ? requested_limit : 5000);
 
   std::vector<MemoryRecord> records;
+  records.reserve(static_cast<std::size_t>(requested_limit));
   while (sqlite3_step(stmt) == SQLITE_ROW) {
     auto record = record_from_stmt(stmt);
     if (categories_match(record.categories, categories)) records.push_back(std::move(record));
