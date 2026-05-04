@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(CURL REQUIRED)
+find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json QUIET)
 
 if(NOT nlohmann_json_FOUND)
@@ -20,6 +21,7 @@ add_executable(pi-lite
   src/line_reader.cpp
   src/llm_client.cpp
   src/main.cpp
+  src/memory.cpp
   src/markdown_renderer.cpp
   src/status_indicator.cpp
   src/tool.cpp
@@ -28,7 +30,7 @@ add_executable(pi-lite
 )
 
 target_include_directories(pi-lite PRIVATE src)
-target_link_libraries(pi-lite PRIVATE CURL::libcurl)
+target_link_libraries(pi-lite PRIVATE CURL::libcurl SQLite3::SQLite3)
 
 if(nlohmann_json_FOUND)
   target_link_libraries(pi-lite PRIVATE nlohmann_json::nlohmann_json)

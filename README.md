@@ -14,6 +14,7 @@ It keeps only the learning-sized core:
 - workspace-safe file tools
 - capped tool output
 - lightweight context compaction
+- optional local long-term memory
 - approximate token/cost stats
 - optional guarded shell execution
 
@@ -26,6 +27,7 @@ Requirements:
 - C++20 compiler
 - CMake
 - libcurl
+- SQLite
 - nlohmann-json
 - `patch` command for the `apply_patch` tool
 
@@ -60,6 +62,23 @@ PI_LITE_BASE_URL=http://localhost:11434/v1
 PI_LITE_MODEL=qwen2.5-coder
 ```
 
+Enable local long-term memory when you want it:
+
+```bash
+PI_LITE_MEMORY=1
+PI_LITE_MEMORY_USER_ID=mouad
+```
+
+By default, memory is stored in `.pi-lite/memory.sqlite3` in the workspace. The store is fully local: SQLite rows, deterministic hashed embeddings, and in-process cosine search.
+
+Automatic memory capture is separate and opt-in:
+
+```bash
+./build/pi-lite --memory --memory-auto-capture
+```
+
+Without `--memory-auto-capture`, the model can still save durable facts with the memory tools.
+
 ## Run
 
 One-shot prompt:
@@ -88,6 +107,9 @@ Interactive shortcuts:
 - `/reset`: clear conversation history
 - `/history`: print the stored conversation/tool history
 - `/edit`: open `$EDITOR` for a multi-line prompt
+- `/memory list`: print stored long-term memories
+- `/memory search <query>`: search long-term memories
+- `/memory delete <id>`: delete a memory
 - `/help`: show interactive commands
 - `!<command>`: run a local shell command directly, without asking the LLM
 
@@ -127,10 +149,43 @@ The agent exposes these tools to the model:
 - `grep_files`: recursive regex search over text files, gitignore-aware when possible
 - `apply_patch`: standard unified diff application through `patch`
 - `bash`: shell execution, disabled unless `--allow-bash` is provided
+- `memory_save`: save a durable, non-secret long-term memory when memory is enabled
+- `memory_search`: search long-term memory
+- `memory_list`: list recent long-term memories
+- `memory_update`: update a memory by ID
+- `memory_delete`: delete a memory by ID
 
 Tool output is capped to roughly 50 KB or 2000 lines, following the same idea used by `pi-coding-agent` to avoid flooding model context. Long-lived chats also compact older turns and oversized tool outputs when the approximate context budget is exceeded. Use `--max-context-tokens 0` to disable compaction.
 
 Secret-like files such as `.env`, credentials files, and SSH keys are blocked from `read_file` and `write_file`, skipped by `grep_files`, and rejected by `apply_patch`. The runtime can still load `.env` for configuration.
+
+## Memory
+
+Memory is disabled by default. Enable it with `--memory` or `PI_LITE_MEMORY=1`.
+
+Useful options:
+
+```bash
+./build/pi-lite --memory \
+  --memory-user-id mouad \
+  --memory-agent-id pi-lite \
+  --memory-path .pi-lite/memory.sqlite3
+```
+
+Environment variables:
+
+```bash
+PI_LITE_MEMORY=1
+PI_LITE_MEMORY_PATH=.pi-lite/memory.sqlite3
+PI_LITE_MEMORY_USER_ID=mouad
+PI_LITE_MEMORY_AGENT_ID=pi-lite
+PI_LITE_MEMORY_RUN_ID=session-1
+PI_LITE_MEMORY_AUTO_CAPTURE=0
+```
+
+When memory is enabled, `pi-lite` searches relevant memories before each model call and injects a short `Relevant long-term memory` section into the system prompt.
+
+Auto-capture follows mem0's 80/20 shape: extract durable facts with the configured chat model, reject unsafe or noisy facts, dedupe locally, then persist facts with categories and timestamps. It never stores raw tool output automatically.
 
 ## Streaming UX
 

@@ -199,8 +199,8 @@ void print_usage_stats(const std::string& model, std::size_t prompt_estimate, co
 
 }  // namespace
 
-Agent::Agent(AppConfig config, LlmClient client, ToolRegistry tools)
-    : config_(std::move(config)), client_(std::move(client)), tools_(std::move(tools)) {}
+Agent::Agent(AppConfig config, LlmClient client, ToolRegistry tools, std::shared_ptr<MemoryManager> memory)
+    : config_(std::move(config)), client_(std::move(client)), tools_(std::move(tools)), memory_(std::move(memory)) {}
 
 void Agent::clear() {
   messages_.clear();
@@ -211,7 +211,7 @@ void Agent::set_model(const std::string& model) {
   client_ = LlmClient(config_);
 }
 
-std::string Agent::system_prompt() const {
+std::string Agent::system_prompt(const std::string& current_prompt) const {
   std::ostringstream prompt;
   prompt << "You are pi-lite, a small general-purpose coding agent for learning purposes.\n";
   prompt << "Help with any programming language or project type present in the workspace.\n";
@@ -221,6 +221,10 @@ std::string Agent::system_prompt() const {
   prompt << "Never inspect secret files such as .env, credentials, SSH keys, or private keys.\n";
   prompt << "Do not run destructive shell commands. Explain the final result briefly.\n";
   prompt << "Tool outputs are capped; ask for narrower reads or searches if needed.\n";
+  if (memory_ && memory_->enabled()) {
+    const auto context = memory_->prompt_context(current_prompt);
+    if (!trim(context).empty()) prompt << "\n" << context;
+  }
   return prompt.str();
 }
 
@@ -231,7 +235,7 @@ void Agent::run(const std::string& prompt) {
   const auto tool_schemas = tools_.schemas();
 
   for (int iteration = 1; iteration <= config_.max_iterations; ++iteration) {
-    const auto system = system_prompt();
+    const auto system = system_prompt(prompt);
     if (maybe_compact_messages(messages_, system, tool_schemas, config_.max_context_tokens)) {
       std::cerr << paint_stderr("\033[2m", "[memory] compacted conversation context") << "\n";
     }
@@ -267,7 +271,13 @@ void Agent::run(const std::string& prompt) {
     messages_.push_back(assistant);
     print_usage_stats(config_.model, prompt_tokens_estimate, assistant);
 
-    if (assistant.tool_calls.empty()) return;
+    if (assistant.tool_calls.empty()) {
+      if (memory_ && memory_->auto_capture_enabled()) {
+        const auto saved = memory_->capture_turn(prompt, assistant.content, client_);
+        if (saved > 0) std::cerr << paint_stderr("\033[2m", "[memory] saved " + std::to_string(saved) + " fact(s)") << "\n";
+      }
+      return;
+    }
 
     for (const auto& call : assistant.tool_calls) {
       const auto started = std::chrono::steady_clock::now();

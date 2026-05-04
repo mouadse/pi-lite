@@ -3,7 +3,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -14,6 +16,7 @@
 #include "config.hpp"
 #include "line_reader.hpp"
 #include "llm_client.hpp"
+#include "memory.hpp"
 #include "tool.hpp"
 #include "tools.hpp"
 #include "util.hpp"
@@ -29,6 +32,7 @@ std::vector<pilite::SlashCommandSpec> interactive_slash_commands() {
       {.name = "history", .description = "print stored conversation/tool history"},
       {.name = "edit", .description = "open $EDITOR for a multi-line prompt"},
       {.name = "model", .description = "show or switch the model (/model <name>)"},
+      {.name = "memory", .description = "manage long-term memory (/memory list|search|delete)"},
       {.name = "help", .description = "show interactive commands"},
   };
 }
@@ -50,17 +54,24 @@ Options:
   --max-tokens N          Maximum assistant output tokens. Default: 4096.
   --max-context-tokens N  Approximate context budget before compaction. Default: 24000. Use 0 to disable.
   --temperature N         Sampling temperature. Default: 0.2.
+  --memory                Enable local long-term memory.
+  --memory-path PATH      SQLite memory path. Default: .pi-lite/memory.sqlite3 in workspace.
+  --memory-user-id ID     User scope for memory. Default: PI_LITE_MEMORY_USER_ID or current user.
+  --memory-agent-id ID    Agent scope for memory. Default: pi-lite.
+  --memory-run-id ID      Optional run/session memory scope.
+  --memory-auto-capture   Extract durable facts after turns. Disabled unless this flag is set.
   --verbose               Print raw JSON requests and responses.
   --self-test             Run local tool smoke tests without calling an LLM.
   --help                  Show this help.
 
 Environment:
   PI_LITE_BASE_URL, PI_LITE_API_KEY, PI_LITE_MODEL
+  PI_LITE_MEMORY, PI_LITE_MEMORY_PATH, PI_LITE_MEMORY_USER_ID, PI_LITE_MEMORY_AGENT_ID, PI_LITE_MEMORY_RUN_ID, PI_LITE_MEMORY_AUTO_CAPTURE
   OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL
   OPENROUTER_API_KEY, OPENROUTER_MODEL
 
 The program also reads a .env file from the workspace, without printing secrets.
-Interactive commands: /exit, /clear, /reset, /history, /edit, /model, /help, !<shell command>.
+Interactive commands: /exit, /clear, /reset, /history, /edit, /model, /memory, /help, !<shell command>.
 Type / in interactive mode to open slash command autocomplete.
 )";
 }
@@ -180,6 +191,11 @@ bool looks_local_url(const std::string& url) {
          url.find("0.0.0.0") != std::string::npos;
 }
 
+bool truthy_config_value(const std::string& value) {
+  const auto lower = pilite::to_lower(pilite::trim(value));
+  return lower == "1" || lower == "true" || lower == "yes" || lower == "on";
+}
+
 bool command_is_dangerous(const std::string& command) {
   const auto lower = pilite::to_lower(command);
   static const std::vector<std::string> blocked = {
@@ -239,6 +255,53 @@ void print_history(const pilite::Agent& agent) {
       if (preview.back() != '\n') std::cout << "\n";
     }
   }
+}
+
+void handle_memory_command(const std::shared_ptr<pilite::MemoryManager>& memory, const std::string& line) {
+  if (!memory || !memory->enabled()) {
+    std::cout << "Memory is disabled. Restart with --memory to enable it.\n";
+    return;
+  }
+
+  const auto rest = pilite::trim(line == "/memory" ? std::string() : line.substr(8));
+  if (rest.empty() || rest == "help") {
+    std::cout << "Usage: /memory list | /memory search <query> | /memory delete <id>\n";
+    return;
+  }
+  if (rest == "list") {
+    const auto records = memory->list({}, 50);
+    if (records.empty()) {
+      std::cout << "No memories found.\n";
+      return;
+    }
+    for (const auto& record : records) {
+      std::cout << record.id << " [";
+      for (std::size_t i = 0; i < record.categories.size(); ++i) {
+        if (i) std::cout << ",";
+        std::cout << record.categories[i];
+      }
+      std::cout << "] " << record.memory << "\n";
+    }
+    return;
+  }
+  if (rest.rfind("search ", 0) == 0) {
+    const auto query = pilite::trim(rest.substr(7));
+    const auto records = memory->search(query, {}, 10, 0.10);
+    if (records.empty()) {
+      std::cout << "No memories found.\n";
+      return;
+    }
+    for (const auto& record : records) {
+      std::cout << std::fixed << std::setprecision(3) << record.score << " " << record.id << " " << record.memory << "\n";
+    }
+    return;
+  }
+  if (rest.rfind("delete ", 0) == 0) {
+    const auto id = pilite::trim(rest.substr(7));
+    std::cout << (memory->remove(id) ? "Memory deleted.\n" : "Memory was not found.\n");
+    return;
+  }
+  std::cout << "Unknown memory command. Usage: /memory list | /memory search <query> | /memory delete <id>\n";
 }
 
 std::optional<std::string> read_prompt_from_editor() {
@@ -315,6 +378,19 @@ int main(int argc, char** argv) {
         config.max_context_tokens = std::stoi(need_value("--max-context-tokens"));
       } else if (arg == "--temperature") {
         config.temperature = std::stod(need_value("--temperature"));
+      } else if (arg == "--memory") {
+        config.memory_enabled = true;
+      } else if (arg == "--memory-path") {
+        config.memory_path = need_value("--memory-path");
+      } else if (arg == "--memory-user-id") {
+        config.memory_user_id = need_value("--memory-user-id");
+      } else if (arg == "--memory-agent-id") {
+        config.memory_agent_id = need_value("--memory-agent-id");
+      } else if (arg == "--memory-run-id") {
+        config.memory_run_id = need_value("--memory-run-id");
+      } else if (arg == "--memory-auto-capture") {
+        config.memory_enabled = true;
+        config.memory_auto_capture = true;
       } else if (arg.rfind("--", 0) == 0) {
         throw std::runtime_error("unknown option: " + arg);
       } else {
@@ -339,6 +415,25 @@ int main(int argc, char** argv) {
   if (config.model.empty()) {
     config.model = config_value(dotenv, {"PI_LITE_MODEL", "OPENAI_MODEL", "OPENROUTER_MODEL"});
   }
+  if (!config.memory_enabled) {
+    config.memory_enabled = truthy_config_value(config_value(dotenv, {"PI_LITE_MEMORY"}));
+  }
+  if (!config.memory_auto_capture) {
+    config.memory_auto_capture = truthy_config_value(config_value(dotenv, {"PI_LITE_MEMORY_AUTO_CAPTURE"}));
+    if (config.memory_auto_capture) config.memory_enabled = true;
+  }
+  if (config.memory_path.empty()) {
+    if (auto value = config_value(dotenv, {"PI_LITE_MEMORY_PATH"}); !value.empty()) config.memory_path = value;
+  }
+  if (config.memory_user_id.empty()) {
+    config.memory_user_id = config_value(dotenv, {"PI_LITE_MEMORY_USER_ID"});
+  }
+  if (config.memory_agent_id == "pi-lite") {
+    if (auto value = config_value(dotenv, {"PI_LITE_MEMORY_AGENT_ID"}); !value.empty()) config.memory_agent_id = value;
+  }
+  if (config.memory_run_id.empty()) {
+    config.memory_run_id = config_value(dotenv, {"PI_LITE_MEMORY_RUN_ID"});
+  }
 
   const bool using_openrouter = !openrouter_key.empty() &&
                                 config_value(dotenv, {"PI_LITE_BASE_URL", "OPENAI_BASE_URL"}).empty();
@@ -349,6 +444,14 @@ int main(int argc, char** argv) {
   if (config.model.empty()) {
     config.model = using_openrouter ? "deepseek/deepseek-v4-flash" : "gpt-4.1-mini";
   }
+  if (config.memory_path.empty()) config.memory_path = config.workspace / ".pi-lite" / "memory.sqlite3";
+  if (config.memory_user_id.empty()) {
+    if (const char* user = std::getenv("USER"); user && *user) {
+      config.memory_user_id = user;
+    } else {
+      config.memory_user_id = "local";
+    }
+  }
 
   if (config.api_key.empty() && !looks_local_url(config.base_url)) {
     std::cerr << "No API key found. Set PI_LITE_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY.\n";
@@ -357,6 +460,16 @@ int main(int argc, char** argv) {
 
   pilite::ToolRegistry tools;
   pilite::register_default_tools(tools, config.workspace, config.allow_bash);
+  std::shared_ptr<pilite::MemoryManager> memory;
+  if (config.memory_enabled) {
+    try {
+      memory = std::make_shared<pilite::MemoryManager>(config);
+      pilite::register_memory_tools(tools, memory);
+    } catch (const std::exception& error) {
+      std::cerr << "Could not initialize memory: " << error.what() << "\n";
+      return 2;
+    }
+  }
 
   if (config.self_test) {
     std::cout << "Workspace: " << config.workspace << "\n";
@@ -388,10 +501,34 @@ int main(int argc, char** argv) {
 
     const auto result = tools.execute("list_files", {{"path", "."}, {"limit", 20}});
     std::cout << result.content;
+    if (memory) {
+      const auto marker = "pi-lite remembers minimal local memory for self test " + std::to_string(static_cast<long long>(getpid()));
+      check("memory_save",
+            tools.execute("memory_save",
+                          {{"memory", marker},
+                           {"categories", nlohmann::json::array({"project"})},
+                           {"metadata", {{"source", "self_test"}}}}));
+      check_contains("memory_search", tools.execute("memory_search", {{"query", "minimal local memory self test"}, {"top_k", 5}}), marker);
+      const auto records = memory->search(marker, {}, 1, 0.10);
+      if (!records.empty()) {
+        const auto updated_marker = marker + " after update";
+        const auto id = records.front().id;
+        check("memory_update", tools.execute("memory_update", {{"id", id}, {"memory", updated_marker}}));
+        const auto updated = memory->get(id);
+        const bool kept_category =
+            updated && std::find(updated->categories.begin(), updated->categories.end(), "project") != updated->categories.end();
+        const bool kept_metadata = updated && updated->metadata.is_object() && updated->metadata.value("source", "") == "self_test";
+        if (!updated || updated->memory != updated_marker || !kept_category || !kept_metadata) {
+          std::cout << "memory_update: did not preserve omitted categories or metadata\n";
+          ok = false;
+        }
+        check("memory_delete", tools.execute("memory_delete", {{"id", id}}));
+      }
+    }
     return ok && !result.is_error ? 0 : 1;
   }
 
-  pilite::Agent agent(config, pilite::LlmClient(config), std::move(tools));
+  pilite::Agent agent(config, pilite::LlmClient(config), std::move(tools), memory);
   const auto one_shot_prompt = join_prompt(prompt_parts);
   const auto stdin_prompt = !isatty(STDIN_FILENO) ? read_all_stdin() : std::string();
   if (!one_shot_prompt.empty()) {
@@ -428,6 +565,10 @@ int main(int argc, char** argv) {
       print_history(agent);
       continue;
     }
+    if (line == "/memory" || line.rfind("/memory ", 0) == 0) {
+      handle_memory_command(memory, line);
+      continue;
+    }
     if (line == "/edit") {
       if (auto edited = read_prompt_from_editor()) agent.run(expand_file_refs(*edited, config.workspace));
       continue;
@@ -444,7 +585,7 @@ int main(int argc, char** argv) {
       continue;
     }
     if (line == "/help") {
-      std::cout << "Commands: /exit, /clear, /reset, /history, /edit, /model, /help, !<shell command>. Type / for autocomplete; prefix shell commands with ! to run locally.\n";
+      std::cout << "Commands: /exit, /clear, /reset, /history, /edit, /model, /memory, /help, !<shell command>. Type / for autocomplete; prefix shell commands with ! to run locally.\n";
       continue;
     }
     if (line.empty()) continue;

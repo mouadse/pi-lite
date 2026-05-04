@@ -5,6 +5,7 @@ build/
 *.dylib
 *.exe
 pi-lite
+.pi-lite/
 # Prerequisites
 *.d
 
