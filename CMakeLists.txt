@@ -15,12 +15,11 @@ if(NOT nlohmann_json_FOUND)
   pkg_check_modules(NLOHMANN_JSON REQUIRED IMPORTED_TARGET nlohmann_json)
 endif()
 
-add_executable(pi-lite
+set(PI_LITE_COMMON_SOURCES
   src/agent.cpp
   src/config.cpp
   src/line_reader.cpp
   src/llm_client.cpp
-  src/main.cpp
   src/memory.cpp
   src/markdown_renderer.cpp
   src/status_indicator.cpp
@@ -29,18 +28,34 @@ add_executable(pi-lite
   src/util.cpp
 )
 
-target_include_directories(pi-lite PRIVATE src)
-target_link_libraries(pi-lite PRIVATE CURL::libcurl SQLite3::SQLite3)
+add_executable(pi-lite
+  src/main.cpp
+  ${PI_LITE_COMMON_SOURCES}
+)
 
-if(nlohmann_json_FOUND)
-  target_link_libraries(pi-lite PRIVATE nlohmann_json::nlohmann_json)
-else()
-  target_link_libraries(pi-lite PRIVATE PkgConfig::NLOHMANN_JSON)
-endif()
+add_executable(pi-lite-memory-bench
+  benchmarks/memory_ops_bench.cpp
+  src/config.cpp
+  src/llm_client.cpp
+  src/memory.cpp
+  src/tool.cpp
+  src/util.cpp
+)
 
-if(MSVC)
-  target_compile_options(pi-lite PRIVATE /W4)
-else()
-  target_compile_options(pi-lite PRIVATE -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections)
-  target_link_options(pi-lite PRIVATE -Wl,--gc-sections)
-endif()
+foreach(target pi-lite pi-lite-memory-bench)
+  target_include_directories(${target} PRIVATE src)
+  target_link_libraries(${target} PRIVATE CURL::libcurl SQLite3::SQLite3)
+
+  if(nlohmann_json_FOUND)
+    target_link_libraries(${target} PRIVATE nlohmann_json::nlohmann_json)
+  else()
+    target_link_libraries(${target} PRIVATE PkgConfig::NLOHMANN_JSON)
+  endif()
+
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections)
+    target_link_options(${target} PRIVATE -Wl,--gc-sections)
+  endif()
+endforeach()

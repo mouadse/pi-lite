@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -15,11 +16,19 @@ struct sqlite3;
 
 namespace pilite {
 
+struct MemoryVectorEntry {
+  std::uint16_t index = 0;
+  float value = 0.0f;
+};
+
 struct MemoryRecord {
   std::string id;
   std::string memory;
   std::string hash;
   std::vector<float> vector;
+  std::vector<MemoryVectorEntry> sparse_vector;
+  double vector_norm = 0.0;
+  double vector_inv_norm = 0.0;
   std::string user_id;
   std::string agent_id;
   std::string run_id;
@@ -69,6 +78,11 @@ class MemoryStore {
                                    const std::vector<std::string>& categories,
                                    int top_k,
                                    double threshold) const;
+  bool has_similar(const std::vector<float>& query,
+                   const std::string& user_id,
+                   const std::string& agent_id,
+                   const std::string& run_id,
+                   double threshold) const;
 
  private:
   void initialize();
@@ -77,9 +91,14 @@ class MemoryStore {
                  const std::string& event,
                  const std::string& old_memory,
                  const std::string& new_memory) const;
+  const std::vector<MemoryRecord>& cached_records() const;
+  void upsert_cached_record(MemoryRecord record) const;
+  void erase_cached_record(const std::string& id) const;
 
   std::filesystem::path path_;
   sqlite3* db_ = nullptr;
+  mutable bool cache_loaded_ = false;
+  mutable std::vector<MemoryRecord> records_cache_;
 };
 
 class MemoryManager {
@@ -116,7 +135,7 @@ class MemoryManager {
   bool is_valid_scope() const;
   bool is_safe_memory(const std::string& memory) const;
   bool owns_record(const MemoryRecord& record) const;
-  std::vector<MemoryRecord> near_duplicates(const std::string& memory, double threshold) const;
+  bool has_near_duplicate(const std::string& memory, double threshold) const;
 
   AppConfig config_;
   HashEmbedder embedder_;

@@ -87,18 +87,35 @@ std::size_t hash_token(const std::string& token) {
   return static_cast<std::size_t>(hash);
 }
 
-double cosine_similarity(const std::vector<float>& a, const std::vector<float>& b) {
-  if (a.empty() || a.size() != b.size()) return 0.0;
-  double dot = 0.0;
-  double norm_a = 0.0;
-  double norm_b = 0.0;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    dot += static_cast<double>(a[i]) * static_cast<double>(b[i]);
-    norm_a += static_cast<double>(a[i]) * static_cast<double>(a[i]);
-    norm_b += static_cast<double>(b[i]) * static_cast<double>(b[i]);
+double vector_norm(const std::vector<float>& vector) {
+  double norm = 0.0;
+  for (const auto value : vector) norm += static_cast<double>(value) * static_cast<double>(value);
+  return norm > 0.0 ? std::sqrt(norm) : 0.0;
+}
+
+std::vector<MemoryVectorEntry> sparse_vector(const std::vector<float>& vector) {
+  std::vector<MemoryVectorEntry> sparse;
+  sparse.reserve(64);
+  for (std::size_t i = 0; i < vector.size(); ++i) {
+    if (vector[i] != 0.0f) sparse.push_back({static_cast<std::uint16_t>(i), vector[i]});
   }
-  if (norm_a <= 0.0 || norm_b <= 0.0) return 0.0;
-  return dot / (std::sqrt(norm_a) * std::sqrt(norm_b));
+  return sparse;
+}
+
+double inverse_norm(double norm) {
+  return norm > 0.0 ? 1.0 / norm : 0.0;
+}
+
+double sparse_cosine_similarity(const std::vector<float>& query,
+                                double query_inv_norm,
+                                const std::vector<MemoryVectorEntry>& vector,
+                                double stored_inv_norm) {
+  if (query.empty() || vector.empty() || query_inv_norm <= 0.0 || stored_inv_norm <= 0.0) return 0.0;
+  double dot = 0.0;
+  for (const auto& entry : vector) {
+    dot += static_cast<double>(query[entry.index]) * static_cast<double>(entry.value);
+  }
+  return dot * query_inv_norm * stored_inv_norm;
 }
 
 std::string vector_to_blob(const std::vector<float>& vector) {
@@ -189,6 +206,9 @@ MemoryRecord record_from_stmt(sqlite3_stmt* stmt) {
   record.memory = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
   record.hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
   record.vector = blob_to_vector(sqlite3_column_blob(stmt, 3), sqlite3_column_bytes(stmt, 3));
+  record.sparse_vector = sparse_vector(record.vector);
+  record.vector_norm = vector_norm(record.vector);
+  record.vector_inv_norm = inverse_norm(record.vector_norm);
   record.user_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
   record.agent_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
   if (sqlite3_column_text(stmt, 6)) record.run_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
@@ -404,6 +424,7 @@ void MemoryStore::exec(const std::string& sql) const {
 
 void MemoryStore::initialize() {
   exec("PRAGMA journal_mode=WAL");
+  exec("PRAGMA synchronous=NORMAL");
   exec("CREATE TABLE IF NOT EXISTS memories("
        "id TEXT PRIMARY KEY,"
        "memory TEXT NOT NULL,"
@@ -424,8 +445,8 @@ void MemoryStore::initialize() {
        "new_memory TEXT,"
        "actor_id TEXT,"
        "created_at TEXT NOT NULL)");
-  exec("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(user_id, agent_id, run_id)");
-  exec("CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(hash)");
+  exec("DROP INDEX IF EXISTS idx_memories_scope");
+  exec("DROP INDEX IF EXISTS idx_memories_hash");
   exec("CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at)");
 }
 
@@ -446,6 +467,34 @@ void MemoryStore::log_event(const std::string& memory_id,
   const int code = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
+}
+
+const std::vector<MemoryRecord>& MemoryStore::cached_records() const {
+  if (cache_loaded_) return records_cache_;
+
+  sqlite3_stmt* stmt = nullptr;
+  const char* sql = "SELECT id,memory,hash,vector,user_id,agent_id,run_id,categories,metadata,created_at,updated_at "
+                    "FROM memories ORDER BY updated_at ASC";
+  if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) throw std::runtime_error(sql_error(db_));
+  records_cache_.clear();
+  while (sqlite3_step(stmt) == SQLITE_ROW) records_cache_.push_back(record_from_stmt(stmt));
+  sqlite3_finalize(stmt);
+  cache_loaded_ = true;
+  return records_cache_;
+}
+
+void MemoryStore::upsert_cached_record(MemoryRecord record) const {
+  if (!cache_loaded_) return;
+  erase_cached_record(record.id);
+  records_cache_.push_back(std::move(record));
+}
+
+void MemoryStore::erase_cached_record(const std::string& id) const {
+  if (!cache_loaded_) return;
+  records_cache_.erase(std::remove_if(records_cache_.begin(), records_cache_.end(), [&](const MemoryRecord& record) {
+                         return record.id == id;
+                       }),
+                       records_cache_.end());
 }
 
 bool MemoryStore::add(MemoryRecord record) {
@@ -470,6 +519,7 @@ bool MemoryStore::add(MemoryRecord record) {
   if (code == SQLITE_CONSTRAINT) return false;
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
   log_event(record.id, "ADD", "", record.memory);
+  upsert_cached_record(std::move(record));
   return true;
 }
 
@@ -495,8 +545,22 @@ bool MemoryStore::update(const std::string& id,
   const int code = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
+  const bool changed = sqlite3_changes(db_) > 0;
+  if (changed) {
+    auto updated = *existing;
+    updated.memory = memory;
+    updated.hash = stable_hash(normalized);
+    updated.vector = vector;
+    updated.sparse_vector = sparse_vector(updated.vector);
+    updated.vector_norm = vector_norm(updated.vector);
+    updated.vector_inv_norm = inverse_norm(updated.vector_norm);
+    updated.categories = normalize_categories(categories);
+    updated.metadata = metadata.is_object() ? metadata : nlohmann::json::object();
+    updated.updated_at = now_iso8601();
+    upsert_cached_record(std::move(updated));
+  }
   log_event(id, "UPDATE", existing->memory, memory);
-  return sqlite3_changes(db_) > 0;
+  return changed;
 }
 
 bool MemoryStore::remove(const std::string& id) {
@@ -510,8 +574,10 @@ bool MemoryStore::remove(const std::string& id) {
   const int code = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   if (code != SQLITE_DONE) throw std::runtime_error(sql_error(db_));
+  const bool changed = sqlite3_changes(db_) > 0;
+  if (changed) erase_cached_record(id);
   log_event(id, "DELETE", existing->memory, "");
-  return sqlite3_changes(db_) > 0;
+  return changed;
 }
 
 std::optional<MemoryRecord> MemoryStore::get(const std::string& id) const {
@@ -535,26 +601,20 @@ std::vector<MemoryRecord> MemoryStore::list(const std::string& user_id,
                                             const std::string& run_id,
                                             const std::vector<std::string>& categories,
                                             int limit) const {
-  sqlite3_stmt* stmt = nullptr;
-  std::string sql = "SELECT id,memory,hash,vector,user_id,agent_id,run_id,categories,metadata,created_at,updated_at FROM memories "
-                    "WHERE user_id=? AND agent_id=?";
-  if (!run_id.empty()) sql += " AND run_id=?";
-  sql += " ORDER BY updated_at DESC LIMIT ?";
-  if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) throw std::runtime_error(sql_error(db_));
-  int index = 1;
-  bind_text(stmt, index++, user_id);
-  bind_text(stmt, index++, agent_id);
-  if (!run_id.empty()) bind_text(stmt, index++, run_id);
   const auto requested_limit = std::clamp(limit, 1, 500);
-  sqlite3_bind_int(stmt, index++, categories.empty() ? requested_limit : 5000);
-
+  const auto scan_limit = categories.empty() ? requested_limit : 5000;
   std::vector<MemoryRecord> records;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    auto record = record_from_stmt(stmt);
-    if (categories_match(record.categories, categories)) records.push_back(std::move(record));
+  records.reserve(static_cast<std::size_t>(requested_limit));
+  int scanned = 0;
+  const auto& cache = cached_records();
+  for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
+    const auto& record = *it;
+    if (record.user_id != user_id || record.agent_id != agent_id) continue;
+    if (!run_id.empty() && record.run_id != run_id) continue;
+    if (++scanned > scan_limit) break;
+    if (categories_match(record.categories, categories)) records.push_back(record);
+    if (records.size() >= static_cast<std::size_t>(requested_limit)) break;
   }
-  sqlite3_finalize(stmt);
-  if (records.size() > static_cast<std::size_t>(requested_limit)) records.resize(static_cast<std::size_t>(requested_limit));
   return records;
 }
 
@@ -565,20 +625,66 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
                                               const std::vector<std::string>& categories,
                                               int top_k,
                                               double threshold) const {
-  auto candidates = list(user_id, agent_id, run_id, categories, 5000);
-  for (auto& candidate : candidates) candidate.score = cosine_similarity(query, candidate.vector);
-  candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [&](const MemoryRecord& record) {
-                     return record.score < threshold;
-                   }),
-                   candidates.end());
-  std::sort(candidates.begin(), candidates.end(), [](const MemoryRecord& left, const MemoryRecord& right) {
-    if (left.score == right.score) return left.updated_at > right.updated_at;
+  struct ScoredRecord {
+    const MemoryRecord* record = nullptr;
+    double score = 0.0;
+  };
+  const auto requested = static_cast<std::size_t>(std::max(1, top_k));
+  const auto better = [](const ScoredRecord& left, const ScoredRecord& right) {
+    if (left.score == right.score) return left.record->updated_at > right.record->updated_at;
     return left.score > right.score;
-  });
-  if (candidates.size() > static_cast<std::size_t>(std::max(1, top_k))) {
-    candidates.resize(static_cast<std::size_t>(std::max(1, top_k)));
+  };
+  std::vector<ScoredRecord> best;
+  best.reserve(requested);
+  int scoped_seen = 0;
+  int category_matches = 0;
+  const double query_inv_norm = inverse_norm(vector_norm(query));
+  const auto& cache = cached_records();
+  for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
+    const auto& record = *it;
+    if (record.user_id != user_id || record.agent_id != agent_id) continue;
+    if (!run_id.empty() && record.run_id != run_id) continue;
+    if (++scoped_seen > 5000) break;
+    if (!categories_match(record.categories, categories)) continue;
+    if (++category_matches > 500) break;
+    const double score = sparse_cosine_similarity(query, query_inv_norm, record.sparse_vector, record.vector_inv_norm);
+    if (score < threshold) continue;
+
+    const ScoredRecord candidate{&record, score};
+    if (best.size() < requested) {
+      best.push_back(candidate);
+      continue;
+    }
+
+    auto worst = best.begin();
+    for (auto existing = std::next(best.begin()); existing != best.end(); ++existing) {
+      if (better(*worst, *existing)) worst = existing;
+    }
+    if (better(candidate, *worst)) *worst = candidate;
   }
-  return candidates;
+  std::sort(best.begin(), best.end(), better);
+
+  std::vector<MemoryRecord> records;
+  records.reserve(best.size());
+  for (const auto& scored : best) {
+    records.push_back(*scored.record);
+    records.back().score = scored.score;
+  }
+  return records;
+}
+
+bool MemoryStore::has_similar(const std::vector<float>& query,
+                              const std::string& user_id,
+                              const std::string& agent_id,
+                              const std::string& run_id,
+                              double threshold) const {
+  const double query_inv_norm = inverse_norm(vector_norm(query));
+  for (const auto& record : cached_records()) {
+    if (record.user_id != user_id || record.agent_id != agent_id) continue;
+    if (!run_id.empty() && record.run_id != run_id) continue;
+    if (sparse_cosine_similarity(query, query_inv_norm, record.sparse_vector, record.vector_inv_norm) >= threshold) return true;
+  }
+  return false;
 }
 
 MemoryManager::MemoryManager(AppConfig config)
@@ -605,8 +711,8 @@ bool MemoryManager::owns_record(const MemoryRecord& record) const {
          (config_.memory_run_id.empty() || record.run_id == config_.memory_run_id);
 }
 
-std::vector<MemoryRecord> MemoryManager::near_duplicates(const std::string& memory, double threshold) const {
-  return store_.search(embedder_.embed(memory), config_.memory_user_id, config_.memory_agent_id, config_.memory_run_id, {}, 3, threshold);
+bool MemoryManager::has_near_duplicate(const std::string& memory, double threshold) const {
+  return store_.has_similar(embedder_.embed(memory), config_.memory_user_id, config_.memory_agent_id, config_.memory_run_id, threshold);
 }
 
 bool MemoryManager::save(const std::string& memory,
@@ -614,7 +720,7 @@ bool MemoryManager::save(const std::string& memory,
                          const nlohmann::json& metadata) {
   const auto trimmed = trim(memory);
   if (!enabled() || !is_valid_scope() || trimmed.empty() || !is_safe_memory(trimmed)) return false;
-  if (!near_duplicates(trimmed, 0.92).empty()) return false;
+  if (has_near_duplicate(trimmed, 0.92)) return false;
 
   const auto timestamp = now_iso8601();
   MemoryRecord record;
@@ -622,6 +728,9 @@ bool MemoryManager::save(const std::string& memory,
   record.memory = trimmed;
   record.hash = stable_hash(normalize_memory_text(trimmed));
   record.vector = embedder_.embed(trimmed);
+  record.sparse_vector = sparse_vector(record.vector);
+  record.vector_norm = vector_norm(record.vector);
+  record.vector_inv_norm = inverse_norm(record.vector_norm);
   record.user_id = config_.memory_user_id;
   record.agent_id = config_.memory_agent_id;
   record.run_id = config_.memory_run_id;
