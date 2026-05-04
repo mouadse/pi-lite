@@ -430,8 +430,8 @@ void MemoryStore::initialize() {
        "new_memory TEXT,"
        "actor_id TEXT,"
        "created_at TEXT NOT NULL)");
-  exec("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(user_id, agent_id, run_id)");
-  exec("CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(hash)");
+  exec("DROP INDEX IF EXISTS idx_memories_scope");
+  exec("DROP INDEX IF EXISTS idx_memories_hash");
   exec("CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at)");
 }
 
