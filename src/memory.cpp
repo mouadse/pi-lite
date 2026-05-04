@@ -571,12 +571,16 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
                      return record.score < threshold;
                    }),
                    candidates.end());
-  std::sort(candidates.begin(), candidates.end(), [](const MemoryRecord& left, const MemoryRecord& right) {
+  const auto requested = static_cast<std::size_t>(std::max(1, top_k));
+  const auto better = [](const MemoryRecord& left, const MemoryRecord& right) {
     if (left.score == right.score) return left.updated_at > right.updated_at;
     return left.score > right.score;
-  });
-  if (candidates.size() > static_cast<std::size_t>(std::max(1, top_k))) {
-    candidates.resize(static_cast<std::size_t>(std::max(1, top_k)));
+  };
+  if (candidates.size() > requested) {
+    std::partial_sort(candidates.begin(), candidates.begin() + static_cast<std::ptrdiff_t>(requested), candidates.end(), better);
+    candidates.resize(requested);
+  } else {
+    std::sort(candidates.begin(), candidates.end(), better);
   }
   return candidates;
 }
