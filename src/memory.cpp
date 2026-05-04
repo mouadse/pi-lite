@@ -102,16 +102,20 @@ std::vector<MemoryVectorEntry> sparse_vector(const std::vector<float>& vector) {
   return sparse;
 }
 
+double inverse_norm(double norm) {
+  return norm > 0.0 ? 1.0 / norm : 0.0;
+}
+
 double sparse_cosine_similarity(const std::vector<float>& query,
-                                double query_norm,
+                                double query_inv_norm,
                                 const std::vector<MemoryVectorEntry>& vector,
-                                double stored_norm) {
-  if (query.empty() || vector.empty() || query_norm <= 0.0 || stored_norm <= 0.0) return 0.0;
+                                double stored_inv_norm) {
+  if (query.empty() || vector.empty() || query_inv_norm <= 0.0 || stored_inv_norm <= 0.0) return 0.0;
   double dot = 0.0;
   for (const auto& entry : vector) {
     dot += static_cast<double>(query[entry.index]) * static_cast<double>(entry.value);
   }
-  return dot / (query_norm * stored_norm);
+  return dot * query_inv_norm * stored_inv_norm;
 }
 
 std::string vector_to_blob(const std::vector<float>& vector) {
@@ -204,6 +208,7 @@ MemoryRecord record_from_stmt(sqlite3_stmt* stmt) {
   record.vector = blob_to_vector(sqlite3_column_blob(stmt, 3), sqlite3_column_bytes(stmt, 3));
   record.sparse_vector = sparse_vector(record.vector);
   record.vector_norm = vector_norm(record.vector);
+  record.vector_inv_norm = inverse_norm(record.vector_norm);
   record.user_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
   record.agent_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
   if (sqlite3_column_text(stmt, 6)) record.run_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
@@ -548,6 +553,7 @@ bool MemoryStore::update(const std::string& id,
     updated.vector = vector;
     updated.sparse_vector = sparse_vector(updated.vector);
     updated.vector_norm = vector_norm(updated.vector);
+    updated.vector_inv_norm = inverse_norm(updated.vector_norm);
     updated.categories = normalize_categories(categories);
     updated.metadata = metadata.is_object() ? metadata : nlohmann::json::object();
     updated.updated_at = now_iso8601();
@@ -628,7 +634,7 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
   best.reserve(requested);
   int scoped_seen = 0;
   int category_matches = 0;
-  const double query_norm = vector_norm(query);
+  const double query_inv_norm = inverse_norm(vector_norm(query));
   const auto& cache = cached_records();
   for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
     const auto& record = *it;
@@ -637,7 +643,7 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
     if (++scoped_seen > 5000) break;
     if (!categories_match(record.categories, categories)) continue;
     if (++category_matches > 500) break;
-    const double score = sparse_cosine_similarity(query, query_norm, record.sparse_vector, record.vector_norm);
+    const double score = sparse_cosine_similarity(query, query_inv_norm, record.sparse_vector, record.vector_inv_norm);
     if (score < threshold) continue;
 
     MemoryRecord candidate;
@@ -669,11 +675,11 @@ bool MemoryStore::has_similar(const std::vector<float>& query,
                               const std::string& agent_id,
                               const std::string& run_id,
                               double threshold) const {
-  const double query_norm = vector_norm(query);
+  const double query_inv_norm = inverse_norm(vector_norm(query));
   for (const auto& record : cached_records()) {
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
-    if (sparse_cosine_similarity(query, query_norm, record.sparse_vector, record.vector_norm) >= threshold) return true;
+    if (sparse_cosine_similarity(query, query_inv_norm, record.sparse_vector, record.vector_inv_norm) >= threshold) return true;
   }
   return false;
 }
@@ -721,6 +727,7 @@ bool MemoryManager::save(const std::string& memory,
   record.vector = embedder_.embed(trimmed);
   record.sparse_vector = sparse_vector(record.vector);
   record.vector_norm = vector_norm(record.vector);
+  record.vector_inv_norm = inverse_norm(record.vector_norm);
   record.user_id = config_.memory_user_id;
   record.agent_id = config_.memory_agent_id;
   record.run_id = config_.memory_run_id;

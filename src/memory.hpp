@@ -28,6 +28,7 @@ struct MemoryRecord {
   std::vector<float> vector;
   std::vector<MemoryVectorEntry> sparse_vector;
   double vector_norm = 0.0;
+  double vector_inv_norm = 0.0;
   std::string user_id;
   std::string agent_id;
   std::string run_id;
