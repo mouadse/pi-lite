@@ -600,8 +600,13 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
                                               const std::vector<std::string>& categories,
                                               int top_k,
                                               double threshold) const {
-  std::vector<MemoryRecord> candidates;
-  candidates.reserve(static_cast<std::size_t>(std::max(1, top_k)));
+  const auto requested = static_cast<std::size_t>(std::max(1, top_k));
+  const auto better = [](const MemoryRecord& left, const MemoryRecord& right) {
+    if (left.score == right.score) return left.updated_at > right.updated_at;
+    return left.score > right.score;
+  };
+  std::vector<MemoryRecord> best;
+  best.reserve(requested);
   int scoped_seen = 0;
   int category_matches = 0;
   for (const auto& record : cached_records()) {
@@ -612,21 +617,29 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
     if (++category_matches > 500) break;
     const double score = cosine_similarity(query, record.vector);
     if (score < threshold) continue;
-    candidates.push_back(record);
-    candidates.back().score = score;
+
+    MemoryRecord candidate;
+    if (best.size() < requested) {
+      candidate = record;
+      candidate.score = score;
+      best.push_back(std::move(candidate));
+      continue;
+    }
+
+    auto worst = best.begin();
+    for (auto it = std::next(best.begin()); it != best.end(); ++it) {
+      if (better(*worst, *it)) worst = it;
+    }
+    candidate.score = score;
+    candidate.updated_at = record.updated_at;
+    if (better(candidate, *worst)) {
+      candidate = record;
+      candidate.score = score;
+      *worst = std::move(candidate);
+    }
   }
-  const auto requested = static_cast<std::size_t>(std::max(1, top_k));
-  const auto better = [](const MemoryRecord& left, const MemoryRecord& right) {
-    if (left.score == right.score) return left.updated_at > right.updated_at;
-    return left.score > right.score;
-  };
-  if (candidates.size() > requested) {
-    std::partial_sort(candidates.begin(), candidates.begin() + static_cast<std::ptrdiff_t>(requested), candidates.end(), better);
-    candidates.resize(requested);
-  } else {
-    std::sort(candidates.begin(), candidates.end(), better);
-  }
-  return candidates;
+  std::sort(best.begin(), best.end(), better);
+  return best;
 }
 
 bool MemoryStore::has_similar(const std::vector<float>& query,
