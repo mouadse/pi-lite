@@ -102,24 +102,14 @@ std::vector<MemoryVectorEntry> sparse_vector(const std::vector<float>& vector) {
   return sparse;
 }
 
-double sparse_cosine_similarity(const std::vector<MemoryVectorEntry>& query,
+double sparse_cosine_similarity(const std::vector<float>& query,
                                 double query_norm,
                                 const std::vector<MemoryVectorEntry>& vector,
                                 double stored_norm) {
   if (query.empty() || vector.empty() || query_norm <= 0.0 || stored_norm <= 0.0) return 0.0;
   double dot = 0.0;
-  auto left = query.begin();
-  auto right = vector.begin();
-  while (left != query.end() && right != vector.end()) {
-    if (left->index == right->index) {
-      dot += static_cast<double>(left->value) * static_cast<double>(right->value);
-      ++left;
-      ++right;
-    } else if (left->index < right->index) {
-      ++left;
-    } else {
-      ++right;
-    }
+  for (const auto& entry : vector) {
+    dot += static_cast<double>(query[entry.index]) * static_cast<double>(entry.value);
   }
   return dot / (query_norm * stored_norm);
 }
@@ -639,7 +629,6 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
   int scoped_seen = 0;
   int category_matches = 0;
   const double query_norm = vector_norm(query);
-  const auto query_sparse = sparse_vector(query);
   const auto& cache = cached_records();
   for (auto it = cache.rbegin(); it != cache.rend(); ++it) {
     const auto& record = *it;
@@ -648,7 +637,7 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
     if (++scoped_seen > 5000) break;
     if (!categories_match(record.categories, categories)) continue;
     if (++category_matches > 500) break;
-    const double score = sparse_cosine_similarity(query_sparse, query_norm, record.sparse_vector, record.vector_norm);
+    const double score = sparse_cosine_similarity(query, query_norm, record.sparse_vector, record.vector_norm);
     if (score < threshold) continue;
 
     MemoryRecord candidate;
@@ -681,11 +670,10 @@ bool MemoryStore::has_similar(const std::vector<float>& query,
                               const std::string& run_id,
                               double threshold) const {
   const double query_norm = vector_norm(query);
-  const auto query_sparse = sparse_vector(query);
   for (const auto& record : cached_records()) {
     if (record.user_id != user_id || record.agent_id != agent_id) continue;
     if (!run_id.empty() && record.run_id != run_id) continue;
-    if (sparse_cosine_similarity(query_sparse, query_norm, record.sparse_vector, record.vector_norm) >= threshold) return true;
+    if (sparse_cosine_similarity(query, query_norm, record.sparse_vector, record.vector_norm) >= threshold) return true;
   }
   return false;
 }
