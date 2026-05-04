@@ -625,12 +625,16 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
                                               const std::vector<std::string>& categories,
                                               int top_k,
                                               double threshold) const {
+  struct ScoredRecord {
+    const MemoryRecord* record = nullptr;
+    double score = 0.0;
+  };
   const auto requested = static_cast<std::size_t>(std::max(1, top_k));
-  const auto better = [](const MemoryRecord& left, const MemoryRecord& right) {
-    if (left.score == right.score) return left.updated_at > right.updated_at;
+  const auto better = [](const ScoredRecord& left, const ScoredRecord& right) {
+    if (left.score == right.score) return left.record->updated_at > right.record->updated_at;
     return left.score > right.score;
   };
-  std::vector<MemoryRecord> best;
+  std::vector<ScoredRecord> best;
   best.reserve(requested);
   int scoped_seen = 0;
   int category_matches = 0;
@@ -646,28 +650,27 @@ std::vector<MemoryRecord> MemoryStore::search(const std::vector<float>& query,
     const double score = sparse_cosine_similarity(query, query_inv_norm, record.sparse_vector, record.vector_inv_norm);
     if (score < threshold) continue;
 
-    MemoryRecord candidate;
+    const ScoredRecord candidate{&record, score};
     if (best.size() < requested) {
-      candidate = record;
-      candidate.score = score;
-      best.push_back(std::move(candidate));
+      best.push_back(candidate);
       continue;
     }
 
     auto worst = best.begin();
-    for (auto it = std::next(best.begin()); it != best.end(); ++it) {
-      if (better(*worst, *it)) worst = it;
+    for (auto existing = std::next(best.begin()); existing != best.end(); ++existing) {
+      if (better(*worst, *existing)) worst = existing;
     }
-    candidate.score = score;
-    candidate.updated_at = record.updated_at;
-    if (better(candidate, *worst)) {
-      candidate = record;
-      candidate.score = score;
-      *worst = std::move(candidate);
-    }
+    if (better(candidate, *worst)) *worst = candidate;
   }
   std::sort(best.begin(), best.end(), better);
-  return best;
+
+  std::vector<MemoryRecord> records;
+  records.reserve(best.size());
+  for (const auto& scored : best) {
+    records.push_back(*scored.record);
+    records.back().score = scored.score;
+  }
+  return records;
 }
 
 bool MemoryStore::has_similar(const std::vector<float>& query,
