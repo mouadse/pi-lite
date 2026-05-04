@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include <unistd.h>
+
 #include "markdown_renderer.hpp"
 #include "status_indicator.hpp"
 #include "util.hpp"
