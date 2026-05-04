@@ -32,3 +32,7 @@ Optimize pi-lite's local long-term memory so saving and retrieving memories caus
 ## What's Been Tried
 - Initial source read shows current search loads up to 5000 rows via `list()`, parses categories/metadata, converts vector BLOBs into `std::vector<float>`, computes cosine, then fully sorts all candidates. Save also performs a near-duplicate search before inserting, so save latency grows with database size.
 - First baseline attempt measured `total_us=1,756,188`, but checks failed because the full product target exposed a pre-existing missing `#include <unistd.h>` for `STDERR_FILENO` in `src/agent.cpp`. Next run includes that build fix.
+- Kept `std::partial_sort` for memory top-k ranking: `total_us=1,690,740` (~3.7% faster) with same comparator and candidate scan.
+- Kept `records.reserve(requested_limit)` in list/search candidate collection: tiny additional win (`total_us=1,690,302`), probably near noise but allocation-free and semantically neutral.
+- Discarded dot-product-only cosine despite normalized embeddings: theoretically lower arithmetic but measured worse than the partial-sort best; SQLite/materialization dominated at that point.
+- Kept an in-process `MemoryStore` cache synced on add/update/delete: `total_us=169,003` (~90% faster than baseline), with search/prompt/list avoiding repeated SQLite reads and JSON/vector materialization. Main semantic risk: external DB modifications after cache load are not observed until restart.

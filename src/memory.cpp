@@ -404,6 +404,7 @@ void MemoryStore::exec(const std::string& sql) const {
 
 void MemoryStore::initialize() {
   exec("PRAGMA journal_mode=WAL");
+  exec("PRAGMA synchronous=NORMAL");
   exec("CREATE TABLE IF NOT EXISTS memories("
        "id TEXT PRIMARY KEY,"
        "memory TEXT NOT NULL,"
