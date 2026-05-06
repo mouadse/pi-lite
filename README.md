@@ -2,6 +2,8 @@
 
 `pi-lite` is a tiny coding agent inspired by `badlogic/pi-mono` except it got a long-term local memory inspired from `mem0ai/mem0`.
 
+![pi-lite in action](screen.png)
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mouadse/pi-lite)
 
 It keeps only the learning-sized core:
