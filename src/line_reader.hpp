@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,9 +20,17 @@ struct SlashCommandSpec {
   std::vector<SlashCommandCompletion> argument_completions = {};
 };
 
-bool read_interactive_line(const std::string& prompt, std::string& line);
+struct LineHistory {
+  std::vector<std::string> entries;
+  std::optional<std::size_t> pos;
+  std::string stash;
+  static constexpr std::size_t max_size = 100;
+};
+
+bool read_interactive_line(const std::string& prompt, std::string& line, LineHistory& history);
 bool read_interactive_line(const std::string& prompt,
                            std::string& line,
+                           LineHistory& history,
                            const std::vector<SlashCommandSpec>& slash_commands);
 
 }  // namespace pilite

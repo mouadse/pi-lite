@@ -17,6 +17,7 @@
 #include "line_reader.hpp"
 #include "llm_client.hpp"
 #include "memory.hpp"
+#include "status_indicator.hpp"
 #include "tool.hpp"
 #include "tools.hpp"
 #include "util.hpp"
@@ -545,11 +546,34 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  std::cout << "pi-lite coding agent. Type /exit to quit, /help for commands, !cmd for local shell.\n";
+  {
+    const bool color = pilite::terminal_supports_ansi(STDOUT_FILENO);
+    const auto c = [&](const char* esc, const char* txt) -> std::string {
+      return color ? std::string(esc) + txt + "\033[0m" : std::string(txt);
+    };
+    const auto rgb = [&](int r, int g, int b, const char* txt) -> std::string {
+      return color ? "\033[38;2;" + std::to_string(r) + ";" + std::to_string(g) + ";" + std::to_string(b) + "m" + txt + "\033[0m" : std::string(txt);
+    };
+    std::cout
+      << "\n"
+      << c("\033[2m", "  ────────────────────────────────────────────────────") << "\n"
+      << "\n"
+      << rgb(140, 200, 255, "  ██████╗ ██╗    ██╗     ██╗████████╗███████╗") << "\n"
+      << rgb(120, 190, 252, "  ██╔══██╗██║    ██║     ██║╚══██╔══╝██╔════╝") << "\n"
+      << rgb(105, 175, 248, "  ██████╔╝██║    ██║     ██║   ██║   █████╗  ") << "\n"
+      << rgb( 90, 160, 244, "  ██╔═══╝ ██║    ██║     ██║   ██║   ██╔══╝  ") << "\n"
+      << rgb( 75, 145, 235, "  ██║     ██║    ███████╗██║   ██║   ███████╗") << "\n"
+      << rgb( 60, 130, 226, "  ╚═╝     ╚═╝    ╚══════╝╚═╝   ╚═╝   ╚══════╝") << "\n"
+      << "\n"
+      << c("\033[2m", "  ────────────────────────────────────────────────────") << "\n"
+      << "  " << c("\033[1m", "coding agent") << "  " << c("\033[2m", "·") << "  " << c("\033[2m", "/exit quit") << "  " << c("\033[2m", "·") << "  " << c("\033[2m", "/help commands") << "  " << c("\033[2m", "·") << "  " << c("\033[2m", "!cmd shell") << "\n"
+      << "\n";
+  }
   const auto slash_commands = interactive_slash_commands();
   std::string line;
+  pilite::LineHistory history;
   while (true) {
-    if (!pilite::read_interactive_line("> ", line, slash_commands)) break;
+    if (!pilite::read_interactive_line("> ", line, history, slash_commands)) break;
     line = pilite::trim(line);
     if (line == "/exit" || line == "/quit") break;
     if (line == "/clear" || line == "clear") {

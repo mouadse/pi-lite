@@ -356,17 +356,61 @@ KeyPress read_key() {
   }
 }
 
+std::string trim(std::string value) {
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char c) {
+                return std::isspace(c) == 0;
+              }));
+  value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char c) {
+                return std::isspace(c) == 0;
+              }).base(), value.end());
+  return value;
+}
+
+void add_to_history(LineHistory& history, const std::string& text) {
+  auto trimmed = trim(text);
+  if (trimmed.empty()) return;
+  if (!history.entries.empty() && history.entries.back() == trimmed) return;
+  if (history.entries.size() >= LineHistory::max_size) {
+    history.entries.erase(history.entries.begin());
+  }
+  history.entries.push_back(std::move(trimmed));
+}
+
+void history_up(LineHistory& history, std::string& line) {
+  if (history.entries.empty()) return;
+  if (!history.pos.has_value()) {
+    history.stash = line;
+    history.pos = history.entries.size() - 1;
+  } else if (*history.pos > 0) {
+    --*history.pos;
+  }
+  line = history.entries[*history.pos];
+}
+
+void history_down(LineHistory& history, std::string& line) {
+  if (!history.pos.has_value()) return;
+  if (*history.pos + 1 < history.entries.size()) {
+    ++*history.pos;
+    line = history.entries[*history.pos];
+  } else {
+    history.pos = std::nullopt;
+    line = history.stash;
+  }
+}
+
 }  // namespace
 
-bool read_interactive_line(const std::string& prompt, std::string& line) {
+bool read_interactive_line(const std::string& prompt, std::string& line, LineHistory& history) {
   static const std::vector<SlashCommandSpec> no_commands;
-  return read_interactive_line(prompt, line, no_commands);
+  return read_interactive_line(prompt, line, history, no_commands);
 }
 
 bool read_interactive_line(const std::string& prompt,
                            std::string& line,
+                           LineHistory& history,
                            const std::vector<SlashCommandSpec>& slash_commands) {
   line.clear();
+  history.pos = std::nullopt;
 
   if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
     std::cout << prompt << std::flush;
@@ -398,6 +442,7 @@ bool read_interactive_line(const std::string& prompt,
           completion = {};
           redraw_line(prompt, line, completion, rendered_completion_rows);
         }
+        add_to_history(history, line);
         clear_rendered_area(rendered_completion_rows);
         rendered_completion_rows = 0;
         std::cout << prompt << line << "\n" << std::flush;
@@ -434,12 +479,20 @@ bool read_interactive_line(const std::string& prompt,
         if (completion.active && !completion.items.empty()) {
           completion.selected = completion.selected == 0 ? completion.items.size() - 1 : completion.selected - 1;
           redraw_line(prompt, line, completion, rendered_completion_rows);
+        } else if (!history.entries.empty()) {
+          history_up(history, line);
+          completion = {};
+          redraw_line(prompt, line, completion, rendered_completion_rows);
         }
         break;
 
       case KeyType::Down:
         if (completion.active && !completion.items.empty()) {
           completion.selected = (completion.selected + 1) % completion.items.size();
+          redraw_line(prompt, line, completion, rendered_completion_rows);
+        } else if (history.pos.has_value()) {
+          history_down(history, line);
+          completion = {};
           redraw_line(prompt, line, completion, rendered_completion_rows);
         }
         break;
@@ -455,11 +508,13 @@ bool read_interactive_line(const std::string& prompt,
       case KeyType::Backspace:
         if (!line.empty()) {
           line.pop_back();
+          if (history.pos.has_value()) history.pos = std::nullopt;
           refresh_completion();
         }
         break;
 
       case KeyType::Character:
+        if (history.pos.has_value()) history.pos = std::nullopt;
         line.push_back(key.c);
         refresh_completion();
         break;
